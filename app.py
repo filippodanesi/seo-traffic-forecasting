@@ -8,7 +8,7 @@ from prophet import Prophet
 from io import BytesIO, StringIO
 
 # Initial configuration
-st.set_page_config(page_title="SEO & Analytics Traffic Forecasting", layout="wide")
+st.set_page_config(page_title="SEO Traffic Forecasting Tool", layout="wide")
 
 def create_prophet_model(data_source="GSC"):
     """
@@ -515,7 +515,7 @@ def export_ga4_data(historical_df, forecast_df):
     return output.getvalue()
 
 def main():
-    st.title("SEO & Analytics Traffic Forecasting Tool")
+    st.title("SEO Traffic Forecasting Tool")
     
     # Data source selection
     data_source = st.selectbox(
