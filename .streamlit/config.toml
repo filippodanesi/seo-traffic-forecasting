@@ -1,22 +1,12 @@
 [theme]
-# Colore primario per pulsanti e elementi interattivi
 primaryColor = "#000000"
-
-# Sfondo principale bianco
 backgroundColor = "#FFFFFF"
-
-# Sidebar e aree secondarie in grigio molto chiaro
 secondaryBackgroundColor = "#F8F9FA"
-
-# Testo principale in nero
 textColor = "#000000"
 
 [theme.button]
 backgroundColor = "#000000"
 textColor = "#FFFFFF"
-
-[theme.textInput]
-active = "#CCCCCC"
 
 [server]
 maxUploadSize = 200
