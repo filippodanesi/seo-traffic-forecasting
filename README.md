@@ -1,6 +1,6 @@
 # SEO & Analytics Traffic Forecasting
 
-A Streamlit-based tool for forecasting SEO traffic and analytics metrics using Facebook's Prophet algorithm.
+A Streamlit-based tool for forecasting SEO traffic and analytics metrics using [Facebook's Prophet algorithm](https://facebook.github.io/prophet/).
 
 ## Features
 
