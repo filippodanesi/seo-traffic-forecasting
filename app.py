@@ -521,7 +521,7 @@ def main():
     data_source = st.selectbox(
         "Select data source",
         ["Google Search Console", "Google Analytics 4"],
-        format_func=lambda x: "GSC" if x == "Google Search Console" else "GA4"
+        format_func=lambda x: x  # Show full names instead of abbreviations
     )
     
     # Sidebar for settings
