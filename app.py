@@ -545,7 +545,7 @@ def main():
         st.info("""
         **How to export data from Google Search Console:**
         1. Access Google Search Console
-        2. Go to "Performance"
+        2. Go to "Performance" > "Search results"
         3. Set the time filter to the **last 16 months**
         4. Click the "Export" button at the top
         5. Select "CSV" as format
