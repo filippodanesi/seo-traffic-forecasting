@@ -20,17 +20,17 @@ def create_prophet_model(data_source="GSC"):
             yearly_seasonality=True,
             weekly_seasonality=False,
             daily_seasonality=False,
-            seasonality_mode='multiplicative'
+            seasonality_mode='multiplicative'  # usato solo se la metrica non è "Position"
         )
     else:  # GA4
         return Prophet(
             yearly_seasonality=True,
-            weekly_seasonality=False,  # disabled for monthly data
+            weekly_seasonality=False,  # disabilitato per dati mensili
             daily_seasonality=False,
             seasonality_mode='multiplicative',
-            changepoint_prior_scale=0.05,  # More conservative in variations
-            seasonality_prior_scale=10,    # Emphasizes seasonality
-            interval_width=0.95            # Confidence interval
+            changepoint_prior_scale=0.05,  # più conservativo nelle variazioni
+            seasonality_prior_scale=10,    # enfatizza la stagionalità
+            interval_width=0.95            # intervallo di confidenza
         )
 
 @st.cache_data
@@ -74,7 +74,6 @@ def load_gsc_data(uploaded_file, min_months=14):
 def load_ga4_data(uploaded_file):
     """Loads and validates data from Google Analytics 4"""
     try:
-        # Read file content
         content = uploaded_file.read().decode('utf8')
         lines = content.split('\n')
         
@@ -151,17 +150,43 @@ def prepare_analytics_data(df):
     
     return monthly_data.sort_values('Date')
 
+
 def forecast_with_prophet(df, metric, forecast_months, data_source="GSC"):
-    """Performs forecasting using Facebook Prophet"""
+    """Performs forecasting using Facebook Prophet, con trasformazione log per certe metriche."""
     try:
         prophet_df = df[['Date', metric]].rename(columns={'Date': 'ds', metric: 'y'})
         
-        model = create_prophet_model(data_source)
+        # Decidiamo se applicare il log transform (Clicks, Impressions, Users)
+        apply_log_transform = metric in ["Clicks", "Impressions", "Users"]
+        
+        # Se è Position, usiamo un mini-modello Prophet "additive" invece che "multiplicative"
+        if metric == "Position":
+            model = Prophet(
+                yearly_seasonality=True,
+                weekly_seasonality=False,
+                daily_seasonality=False,
+                seasonality_mode='additive'
+            )
+        else:
+            # Altrimenti usiamo la configurazione standard
+            model = create_prophet_model(data_source)
+        
+        # Applichiamo la trasformazione log se necessario
+        if apply_log_transform:
+            prophet_df['y'] = np.log1p(prophet_df['y'])  # log(y+1)
+        
+        # Fit del modello
         model.fit(prophet_df)
         
+        # Predire sul futuro
         future = model.make_future_dataframe(periods=forecast_months, freq='MS')
         forecast = model.predict(future)
         
+        # Se abbiamo fatto la trasformazione, torniamo in scala originale
+        if apply_log_transform:
+            forecast[['yhat', 'yhat_lower', 'yhat_upper']] = np.expm1(forecast[['yhat', 'yhat_lower', 'yhat_upper']])
+        
+        # Rinominiamo le colonne
         result = forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper']]
         result = result.rename(columns={
             'ds': 'Date',
@@ -179,9 +204,9 @@ def forecast_with_prophet(df, metric, forecast_months, data_source="GSC"):
 def calculate_gsc_forecast(df, forecast_months=24):
     """Calculates forecasts for Search Console metrics"""
     try:
-        clicks_forecast = forecast_with_prophet(df, 'Clicks', forecast_months)
-        impressions_forecast = forecast_with_prophet(df, 'Impressions', forecast_months)
-        position_forecast = forecast_with_prophet(df, 'Position', forecast_months)
+        clicks_forecast = forecast_with_prophet(df, 'Clicks', forecast_months, data_source="GSC")
+        impressions_forecast = forecast_with_prophet(df, 'Impressions', forecast_months, data_source="GSC")
+        position_forecast = forecast_with_prophet(df, 'Position', forecast_months, data_source="GSC")
         
         if clicks_forecast is None or impressions_forecast is None or position_forecast is None:
             raise ValueError("Error in forecast calculation")
@@ -259,6 +284,7 @@ def display_gsc_summary_metrics(historical_df, forecast_df):
         forecast_avg = forecast_df[f"Forecast_{metric['metric']}"].mean()
         
         if metric.get('inverse', False):
+            # Metrica "inversa" (posizione più bassa è meglio)
             change_pct = ((current_avg - forecast_avg) / current_avg * 100)
         else:
             change_pct = ((forecast_avg - current_avg) / current_avg * 100)
@@ -269,6 +295,7 @@ def display_gsc_summary_metrics(historical_df, forecast_df):
                 metric['format'].format(current_avg)
             )
         with col2:
+            # Nota: per la Position invertiamo segno e colore
             display_pct = -change_pct if metric['metric'] == 'Position' else change_pct
             delta_color = "inverse" if metric['metric'] == 'Position' else "normal"
                 
@@ -282,6 +309,7 @@ def display_gsc_summary_metrics(historical_df, forecast_df):
             difference = forecast_avg - current_avg
             is_improvement = difference > 0
             
+            # Se la metrica è inversa, un decremento è un miglioramento
             if metric.get('inverse', False):
                 is_improvement = not is_improvement
                 
@@ -521,7 +549,7 @@ def main():
     data_source = st.selectbox(
         "Select data source",
         ["Google Search Console", "Google Analytics 4"],
-        format_func=lambda x: x  # Show full names instead of abbreviations
+        format_func=lambda x: x  # Show full names
     )
     
     # Sidebar for settings
@@ -560,9 +588,9 @@ def main():
         **How to export data from Google Analytics 4:**
         1. Access Google Analytics 4
         2. Go to "Reports" > "Acquisition" > "Acquisition Overview"
-        4. Set the time filter to the **last 12 months**
-        5. Click the "Share this report" button at the top right
-        6. Select "Download file"
+        3. Set the time filter to the **last 12 months** 
+        4. Click the "Share this report" button at the top right
+        5. Select "Download file"
         
         ⚠️ **Important**: 
         - If possible, export monthly data in CSV (or weekly if you want a weekly forecast)
