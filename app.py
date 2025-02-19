@@ -71,8 +71,9 @@ def load_gsc_data(uploaded_file, min_months=14):
         return None
 
 @st.cache_data
+@st.cache_data
 def load_ga4_data(uploaded_file):
-    """Loads and validates data from Google Analytics 4"""
+    """Loads and validates data from Google Analytics 4, supporting metadata in Italian and English"""
     try:
         content = uploaded_file.read().decode('utf8')
         lines = content.split('\n')
@@ -80,18 +81,50 @@ def load_ga4_data(uploaded_file):
         # Extract metadata
         metadata = {}
         data_start_index = 0
+        
+        # Metadata patterns in English and Italian
+        metadata_patterns = {
+            'start_date': ['# Start date:', '# Data di inizio:'],
+            'end_date': ['# End date:', '# Data di fine:']
+        }
+        
+        # Column header patterns (for finding data start)
+        header_patterns = ['Week,Active Users', 'Settimana,Utenti attivi']
+        
         for i, line in enumerate(lines):
-            if line.startswith('# Start date:'):
-                metadata['start_date'] = datetime.strptime(line.split(':')[1].strip(), '%Y%m%d')
-            elif line.startswith('# End date:'):
-                metadata['end_date'] = datetime.strptime(line.split(':')[1].strip(), '%Y%m%d')
-            elif 'Week,Active Users' in line:
-                data_start_index = i
+            # Check for start date
+            for pattern in metadata_patterns['start_date']:
+                if line.startswith(pattern):
+                    date_str = line.split(':')[1].strip()
+                    metadata['start_date'] = datetime.strptime(date_str, '%Y%m%d')
+                    break
+                    
+            # Check for end date
+            for pattern in metadata_patterns['end_date']:
+                if line.startswith(pattern):
+                    date_str = line.split(':')[1].strip()
+                    metadata['end_date'] = datetime.strptime(date_str, '%Y%m%d')
+                    break
+            
+            # Check for data header
+            for pattern in header_patterns:
+                if pattern in line:
+                    data_start_index = i
+                    break
+            
+            # If we found the data header, stop looking
+            if data_start_index > 0:
                 break
         
+        # Verify we found the metadata
+        if 'start_date' not in metadata or 'end_date' not in metadata:
+            st.warning("Impossibile rilevare le date di inizio e fine nei metadati del file. "
+                      "Assicurati che il formato del report GA4 sia corretto.")
+        
         # Verify minimum data period (8 weeks)
-        if (metadata['end_date'] - metadata['start_date']).days < 56:  # 8 weeks
-            st.warning("At least 8 weeks of data are recommended for accurate forecasts.")
+        if 'start_date' in metadata and 'end_date' in metadata:
+            if (metadata['end_date'] - metadata['start_date']).days < 56:  # 8 weeks
+                st.warning("Sono consigliati almeno 8 settimane di dati per previsioni accurate.")
         
         # Find end of temporal data
         data_end_index = data_start_index + 1
@@ -105,8 +138,37 @@ def load_ga4_data(uploaded_file):
         data_csv = '\n'.join(lines[data_start_index:data_end_index])
         df = pd.read_csv(StringIO(data_csv))
         
+        # If the column is called 'Settimana', rename it to 'Week'
+        if 'Settimana' in df.columns:
+            df = df.rename(columns={'Settimana': 'Week'})
+        
+        # If the column is called 'Utenti attivi', rename it to 'Active Users'
+        user_column = None
+        if 'Active Users' in df.columns:
+            user_column = 'Active Users'
+        elif 'Utenti attivi' in df.columns:
+            user_column = 'Utenti attivi'
+            df = df.rename(columns={'Utenti attivi': 'Active Users'})
+        else:
+            # Try to find a column that might contain user data
+            for col in df.columns:
+                if 'utent' in col.lower() or 'user' in col.lower():
+                    user_column = col
+                    df = df.rename(columns={col: 'Active Users'})
+                    break
+            
+            if user_column is None:
+                raise ValueError("Non è stata trovata alcuna colonna relativa agli utenti nel file CSV")
+        
         # Convert week number to actual dates
-        df['Date'] = metadata['start_date'] + pd.to_timedelta(df['Week'] * 7, unit='D')
+        if 'start_date' in metadata:
+            df['Date'] = metadata['start_date'] + pd.to_timedelta(df['Week'] * 7, unit='D')
+        else:
+            # Fallback: assume the first week is the current date
+            st.warning("Date di inizio mancanti, utilizzando la data corrente come riferimento.")
+            today = datetime.now()
+            first_week_of_current_year = today.replace(month=1, day=1)
+            df['Date'] = first_week_of_current_year + pd.to_timedelta(df['Week'] * 7, unit='D')
         
         # Rename users column for uniformity
         df = df.rename(columns={'Active Users': 'Users'})
@@ -114,7 +176,7 @@ def load_ga4_data(uploaded_file):
         return df[['Date', 'Users']]
         
     except Exception as e:
-        st.error(f"Error loading GA4 data: {str(e)}")
+        st.error(f"Errore nel caricamento dei dati GA4: {str(e)}")
         return None
 
 def prepare_search_console_data(df):
