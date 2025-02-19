@@ -801,17 +801,16 @@ def main():
     else:  # Google Analytics 4
         st.info("""
         **How to export data from Google Analytics 4:**
-        1. Access Google Analytics 4
-        2. Go to "Reports" > "Acquisition" > "Acquisition Overview" 
-        3. Set the time filter to the **last 12 months** or longer
-        4. Either:
-           - Use the "Export" button (CSV format) 
-           - OR create a custom exploration and export with columns: "Date" and "Users"/"Utenti totali"
+        1. Access the SEO forecast template: https://lookerstudio.google.com/reporting/12aaee27-8de8-4a87-a62e-deb8a8c4d8f0
+        2. Select your account from the dropdown at the top
+        3. Set the timeframe to the last 12 months
+        4. In the table on the left, click on the three dots (⋮) menu
+        5. Select "Export" and choose CSV format
         
         ⚠️ **Important**: 
-        - The tool supports standard GA4 exports as well as simple CSV with "Data" and "Utenti totali" columns
-        - Data frequency (daily/weekly/monthly) will be auto-detected or can be selected manually
-        - At least 30 days of data are recommended for accurate forecasts
+        - The CSV file should contain "Data" and "Utenti totali" columns
+        - At least 12 months of data are recommended for accurate forecasts
+        - Do not modify the column names in the exported file
         """)
     
     # File upload
