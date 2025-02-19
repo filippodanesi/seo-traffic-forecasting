@@ -20,17 +20,17 @@ def create_prophet_model(data_source="GSC"):
             yearly_seasonality=True,
             weekly_seasonality=False,
             daily_seasonality=False,
-            seasonality_mode='multiplicative'  # usato solo se la metrica non è "Position"
+            seasonality_mode='multiplicative'  # used only if the metric is not "Position"
         )
     else:  # GA4
         return Prophet(
             yearly_seasonality=True,
-            weekly_seasonality=False,  # disabilitato per dati mensili
+            weekly_seasonality=False,  # disabled for monthly data
             daily_seasonality=False,
             seasonality_mode='multiplicative',
-            changepoint_prior_scale=0.05,  # più conservativo nelle variazioni
-            seasonality_prior_scale=10,    # enfatizza la stagionalità
-            interval_width=0.95            # intervallo di confidenza
+            changepoint_prior_scale=0.05,  # more conservative in variations
+            seasonality_prior_scale=10,    # emphasizes seasonality
+            interval_width=0.95            # confidence interval
         )
 
 @st.cache_data
