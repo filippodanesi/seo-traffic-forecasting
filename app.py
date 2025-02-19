@@ -801,7 +801,7 @@ def main():
     else:  # Google Analytics 4
         st.info("""
         **How to export data from Google Analytics 4:**
-        1. Access the SEO forecast template: https://lookerstudio.google.com/reporting/12aaee27-8de8-4a87-a62e-deb8a8c4d8f0
+        1. Access the [SEO forecast template](https://lookerstudio.google.com/reporting/12aaee27-8de8-4a87-a62e-deb8a8c4d8f0)
         2. Select your account from the dropdown at the top
         3. Set the timeframe to the last 12 months
         4. In the table on the left, click on the three dots (⋮) menu
