@@ -57,7 +57,7 @@ def get_predefined_updates():
         ]
     ]
     
-    # Aggiungi gli aggiornamenti personalizzati se presenti
+    # Add custom updates if present
     if hasattr(st.session_state, 'custom_updates'):
         update_dates_list.extend(st.session_state.custom_updates['dates'])
         update_names_list.extend([extract_update_name(name) for name in st.session_state.custom_updates['names']])
@@ -202,10 +202,30 @@ def create_traffic_trend_plot(df, show_updates=True):
 def load_gsc_data(uploaded_file, min_months=14):
     """Loads and validates data from Google Search Console"""
     try:
-        df = pd.read_csv(uploaded_file)
+        content = uploaded_file.read().decode('utf8')
+        
+        # Check if the file uses semicolons as separators
+        if ';' in content.split('\n')[0]:
+            content = content.replace(';;', '')
+            content = content.replace(';', ',')
+        
+        df = pd.read_csv(StringIO(content))
         
         # Check essential columns
         required_columns = ['Date', 'Clicks', 'Impressions', 'Position', 'CTR']
+        italian_columns = ['Data', 'Clic', 'Impressioni', 'Posizione', 'CTR']
+        
+        # Check if Italian columns are present
+        if all(col in df.columns for col in italian_columns):
+            # Rename Italian columns to English
+            column_mapping = {
+                'Data': 'Date',
+                'Clic': 'Clicks',
+                'Impressioni': 'Impressions',
+                'Posizione': 'Position'
+            }
+            df = df.rename(columns=column_mapping)
+        
         missing_columns = [col for col in required_columns if col not in df.columns]
         if missing_columns:
             raise ValueError(f"Missing columns: {', '.join(missing_columns)}")
@@ -240,144 +260,103 @@ def load_ga4_data(uploaded_file):
     """Loads and validates data from Google Analytics 4"""
     try:
         content = uploaded_file.read().decode('utf8')
+        
+        # Fix double semicolons and convert to comma-separated if needed
+        if ';;' in content:
+            content = content.replace(';;', '')
+            content = content.replace(';', ',')
+            
         lines = content.split('\n')
         
         # Extract metadata
-        metadata = {'start_date': None, 'end_date': None}  # Initialize with defaults
+        metadata = {'start_date': None, 'end_date': None}
         data_start_index = 0
         
-        # Show file preview for debugging
-        st.info(f"Anteprima file (prime 10 righe):")
-        st.code("\n".join(lines[:10]))
+        # Show file preview for debugging if needed
+        # st.info(f"File preview (first 10 lines):")
+        # st.code("\n".join(lines[:10]))
         
         for i, line in enumerate(lines):
             # English version
-            if line.startswith('# Start date:'):
+            if line.lower().startswith('# start date:'):
                 try:
-                    metadata['start_date'] = datetime.strptime(line.split(':')[1].strip(), '%Y%m%d')
-                except:
-                    pass
-            elif line.startswith('# End date:'):
+                    date_text = line.split(':')[1].strip()
+                    metadata['start_date'] = datetime.strptime(date_text, '%Y%m%d')
+                except Exception as date_err:
+                    st.warning(f"Could not parse start date: {date_text}. Error: {str(date_err)}")
+                    
+            elif line.lower().startswith('# end date:'):
                 try:
-                    metadata['end_date'] = datetime.strptime(line.split(':')[1].strip(), '%Y%m%d')
-                except:
-                    pass
+                    date_text = line.split(':')[1].strip()
+                    metadata['end_date'] = datetime.strptime(date_text, '%Y%m%d')
+                except Exception as date_err:
+                    st.warning(f"Could not parse end date: {date_text}. Error: {str(date_err)}")
             
-            # Italian version
-            elif line.startswith('# Data di inizio:'):
-                try:
-                    metadata['start_date'] = datetime.strptime(line.split(':')[1].strip(), '%Y%m%d')
-                except:
-                    pass
-            elif line.startswith('# Data di fine:'):
-                try:
-                    metadata['end_date'] = datetime.strptime(line.split(':')[1].strip(), '%Y%m%d')
-                except:
-                    pass
-                
-            # Look for header row
-            elif any(header in line for header in ['Week,Active Users', 'Settimana,Utenti attivi', 'Date,Users', 'Data,Utenti']):
+            # Find header row - multiple formats supported
+            elif any(header in line.lower() for header in 
+                    ['week,active users', 'ennesima settimana,utenti attivi', 
+                     'settimana,utenti attivi', 'date,users', 'data,utenti']):
                 data_start_index = i
                 break
-        
-        # If dates are still missing, try to infer from data
-        if metadata['start_date'] is None or metadata['end_date'] is None:
-            # Try to find any header row if not found yet
-            if data_start_index == 0:
-                for i, line in enumerate(lines):
-                    if any(col in line for col in ['User', 'Utent', 'Active', 'Attiv', 'Week', 'Settimana']):
-                        data_start_index = i
-                        break
-            
-            # Process data to get a dataframe
-            data_end_index = data_start_index + 1
-            while data_end_index < len(lines):
-                line = lines[data_end_index].strip()
-                if not line or (not line[0].isdigit() and line[0] not in '0123456789'):
-                    break
-                data_end_index += 1
-            
-            data_csv = '\n'.join(lines[data_start_index:data_end_index])
-            try:
-                temp_df = pd.read_csv(StringIO(data_csv))
                 
-                # Try to identify date column
-                date_col = None
-                for col in temp_df.columns:
-                    if col.lower() in ['week', 'settimana', 'date', 'data']:
-                        date_col = col
-                        break
-                
-                if date_col and metadata['start_date'] is None:
-                    # Use earliest date in data
-                    metadata['start_date'] = datetime.now() - timedelta(days=90)
-                
-                if date_col and metadata['end_date'] is None:
-                    # Use today as end date
-                    metadata['end_date'] = datetime.now()
-                    
-            except Exception as parse_err:
-                st.warning(f"Impossibile analizzare i dati: {str(parse_err)}")
-        
-        # If we still don't have dates, use defaults
+        # If we couldn't find the dates, set defaults
         if metadata['start_date'] is None:
             metadata['start_date'] = datetime.now() - timedelta(days=90)
-            st.warning("Data di inizio non trovata. Usando 90 giorni fa come default.")
+            st.warning("Start date not found in file. Using 90 days ago as default.")
             
         if metadata['end_date'] is None:
             metadata['end_date'] = datetime.now()
-            st.warning("Data di fine non trovata. Usando oggi come default.")
+            st.warning("End date not found in file. Using today as default.")
         
         # Verify minimum data period
         if (metadata['end_date'] - metadata['start_date']).days < 56:
-            st.warning("Si raccomandano almeno 8 settimane di dati per previsioni accurate.")
+            st.warning("At least 8 weeks of data are recommended for accurate forecasts.")
         
-        # Process data
-        # If we haven't found the data start index yet, try a few common headers
+        # If header row not found, look for any plausible header
         if data_start_index == 0:
             for i, line in enumerate(lines):
-                if any(header in line for header in [
-                    'Week,Active Users', 'Settimana,Utenti attivi', 
-                    'Date,Users', 'Data,Utenti',
-                    'Week,Users', 'Settimana,Utenti'
-                ]):
+                if any(keyword in line.lower() for keyword in 
+                       ['week', 'settimana', 'user', 'utent', 'active', 'attiv']):
                     data_start_index = i
                     break
-        
-        # If still not found, show error with preview
+                    
+        # If still not found, show error
         if data_start_index == 0:
-            st.error("Impossibile trovare l'intestazione dei dati. Controlla il formato del file.")
+            st.error("Could not find data header row. Please check file format.")
             return None
         
+        # Find the end of data section
         data_end_index = data_start_index + 1
         while data_end_index < len(lines):
             line = lines[data_end_index].strip()
-            if not line or (not line[0].isdigit() and not any(c.isdigit() for c in line[:10])):
+            if not line or not any(c.isdigit() for c in line[:10]):
                 break
             data_end_index += 1
         
+        # Extract data section as CSV
         data_csv = '\n'.join(lines[data_start_index:data_end_index])
         df = pd.read_csv(StringIO(data_csv))
         
-        # Handle different column formats
+        # Identify columns based on headers (English or Italian)
         date_col = None
         users_col = None
         
         for col in df.columns:
-            if col.lower() in ['week', 'settimana', 'date', 'data']:
+            if col.lower() in ['week', 'settimana', 'ennesima settimana', 'date', 'data']:
                 date_col = col
             if col.lower() in ['active users', 'utenti attivi', 'users', 'utenti']:
                 users_col = col
                 
         if date_col is None or users_col is None:
-            st.error(f"Impossibile identificare le colonne per data e utenti. Colonne trovate: {df.columns.tolist()}")
+            st.error(f"Could not identify date and users columns. Found columns: {df.columns.tolist()}")
             return None
             
         # Handle Week vs Date format
-        if date_col.lower() in ['week', 'settimana']:
-            df['Date'] = metadata['start_date'] + pd.to_timedelta(df[date_col] * 7, unit='D')
+        if 'week' in date_col.lower() or 'settimana' in date_col.lower():
+            # For week format, calculate dates from start date
+            df['Date'] = metadata['start_date'] + pd.to_timedelta(pd.to_numeric(df[date_col], errors='coerce') * 7, unit='D')
         else:
-            # Try different date formats
+            # For date format, parse the date
             try:
                 df['Date'] = pd.to_datetime(df[date_col])
             except:
@@ -385,21 +364,19 @@ def load_ga4_data(uploaded_file):
                     # Try European format
                     df['Date'] = pd.to_datetime(df[date_col], format='%d/%m/%Y')
                 except:
-                    st.error(f"Impossibile convertire la colonna '{date_col}' in date")
+                    st.error(f"Could not convert '{date_col}' column to dates")
                     return None
             
         df = df.rename(columns={users_col: 'Users'})
-        
-        # Show preview of processed data
-        st.info("Anteprima dei dati processati:")
-        st.dataframe(df.head())
+        df['Users'] = pd.to_numeric(df['Users'], errors='coerce')
+        df = df.dropna(subset=['Users', 'Date'])
         
         return df[['Date', 'Users']]
         
     except Exception as e:
-        st.error(f"Errore nel caricamento dei dati GA4: {str(e)}")
+        st.error(f"Error loading GA4 data: {str(e)}")
         import traceback
-        st.error(f"Traceback: {traceback.format_exc()}")
+        st.error(f"Detailed error: {traceback.format_exc()}")
         return None
 
 def prepare_search_console_data(df):
@@ -845,10 +822,10 @@ def main():
             
             show_updates = st.checkbox("Show Google Updates", value=True)
         else:
-            # Opzioni specifiche per Current traffic trend
+            # Options specific for Current traffic trend
             show_updates = st.checkbox("Show Google updates in the graph", value=True)
             
-            # Aggiungi nuovi aggiornamenti Google
+            # Add new Google updates
             st.subheader("Add a new Google Update")
             new_update_date = st.date_input(
                 "Update date",
@@ -864,10 +841,10 @@ def main():
             
             if st.button("Add an update"):
                 if new_update_date and new_update_name:
-                    # Convertiamo la data nel formato richiesto
+                    # Convert date to required format
                     formatted_date = new_update_date.strftime("%d %b %Y")
                     
-                    # Aggiorniamo le liste degli aggiornamenti
+                    # Update the lists of updates
                     if 'custom_updates' not in st.session_state:
                         st.session_state.custom_updates = {
                             'dates': [],
@@ -877,22 +854,20 @@ def main():
                     st.session_state.custom_updates['dates'].append(formatted_date)
                     full_name = f"Released the {new_update_name} {new_update_type} update"
                     st.session_state.custom_updates['names'].append(full_name)
-                    st.success(f"Aggiornamento '{full_name}' aggiunto con successo!")
+                    st.success(f"Update '{full_name}' successfully added!")
     
     # Data source specific instructions
     if data_source == "Current traffic trend":
         st.info("""
-        **How to export data from Google Analytics 4:**
-        1. Access Google Analytics 4
-        2. Go to "Reports" > "Acquisition" > "Acquisition Overview"
-        3. Set the time filter to the **last 12 months** 
-        4. Click the "Share this report" button at the top right
-        5. Select "Download file"
+        **How to prepare traffic trend data:**
+        1. Create a CSV file with two columns: 'Date' and 'Organic Traffic'
+        2. The 'Date' column should be in a standard date format (YYYY-MM-DD)
+        3. The 'Organic Traffic' column should contain numeric values
         
         ⚠️ **Important**: 
-        - If possible, export monthly data in CSV
-        - At least 8 weeks of data are recommended for accurate forecasts
-        - Don't modify the exported file format
+        - Include data for at least 6 months for meaningful analysis
+        - Ensure the dates are in chronological order
+        - Both English and Italian headers are supported (Data, Traffico Organico)
         """)
     elif data_source == "Google Search Console":
         st.info("""
@@ -906,7 +881,7 @@ def main():
         ⚠️ **Important**: 
         - Don't modify column names in the CSV file
         - At least 14 months of data are recommended for accurate forecasts
-        - Don't modify the exported file format
+        - Both English and Italian exports are supported (Clicks/Clic, Impressions/Impressioni)
         """)
     else:  # Google Analytics 4
         st.info("""
@@ -918,9 +893,9 @@ def main():
         5. Select "Download file"
         
         ⚠️ **Important**: 
-        - If possible, export monthly data in CSV
+        - If possible, export monthly data in CSV format
         - At least 8 weeks of data are recommended for accurate forecasts
-        - Don't modify the exported file format
+        - Both English and Italian exports are supported
         """)
     
     # File upload
@@ -932,28 +907,48 @@ def main():
     if uploaded_file is not None:
         if data_source == "Current traffic trend":
             try:
-                df = pd.read_csv(uploaded_file)
+                content = uploaded_file.read().decode('utf8')
+                
+                # Check if the file uses semicolons as separators
+                if ';' in content.split('\n')[0]:
+                    content = content.replace(';;', '')
+                    content = content.replace(';', ',')
+                
+                df = pd.read_csv(StringIO(content))
+                
+                # Check for Italian column names
+                if 'Data' in df.columns and 'Traffico Organico' in df.columns:
+                    df = df.rename(columns={
+                        'Data': 'Date',
+                        'Traffico Organico': 'Organic Traffic'
+                    })
+                
+                # Ensure required columns exist
+                if 'Date' not in df.columns or 'Organic Traffic' not in df.columns:
+                    st.error("Required columns not found. File must contain 'Date' and 'Organic Traffic' columns.")
+                    st.stop()
+                
                 df['Date'] = pd.to_datetime(df['Date'])
                 
-                if st.button("Genera analisi del traffico"):
-                    with st.spinner("Analisi dei dati in corso..."):
+                if st.button("Generate traffic analysis"):
+                    with st.spinner("Analyzing data..."):
                         # Show the traffic trend with Google updates
                         fig = create_traffic_trend_plot(df, show_updates=show_updates)
                         st.plotly_chart(fig, use_container_width=True)
                         
                         # Add summary statistics
-                        st.subheader("Riepilogo del traffico")
+                        st.subheader("Traffic Summary")
                         col1, col2, col3 = st.columns(3)
                         
                         with col1:
                             st.metric(
-                                "Traffico medio giornaliero",
+                                "Average daily traffic",
                                 f"{df['Organic Traffic'].mean():,.0f}"
                             )
                         
                         with col2:
                             st.metric(
-                                "Picco di traffico",
+                                "Peak traffic",
                                 f"{df['Organic Traffic'].max():,.0f}"
                             )
                         
@@ -962,26 +957,28 @@ def main():
                             previous = df.iloc[-2]['Organic Traffic']
                             change = ((latest - previous) / previous) * 100
                             st.metric(
-                                "Traffico più recente",
+                                "Most recent traffic",
                                 f"{latest:,.0f}",
                                 f"{change:+.1f}%"
                             )
                         
                         # Show raw data
-                        st.subheader("Dati grezzi")
+                        st.subheader("Raw data")
                         st.dataframe(df)
                         
                         # Export functionality
                         excel_data = export_traffic_data(df)
                         st.download_button(
-                            label="Scarica analisi del traffico (Excel)",
+                            label="Download traffic analysis (Excel)",
                             data=excel_data,
-                            file_name="analisi_traffico.xlsx",
+                            file_name="traffic_analysis.xlsx",
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                         )
             
             except Exception as e:
-                st.error(f"Errore nel caricamento dei dati di traffico: {str(e)}")
+                st.error(f"Error loading traffic data: {str(e)}")
+                import traceback
+                st.error(f"Detailed error: {traceback.format_exc()}")
         
         elif data_source == "Google Search Console":
             df = load_gsc_data(uploaded_file)
