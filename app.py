@@ -268,110 +268,172 @@ def load_ga4_data(uploaded_file):
             
         lines = content.split('\n')
         
-        # Extract metadata
+        # Extract metadata (will be used if available)
         metadata = {'start_date': None, 'end_date': None}
+        
+        # Find the first non-comment line (should be header)
         data_start_index = 0
+        has_header = False
         
-        # Show file preview for debugging if needed
-        # st.info(f"File preview (first 10 lines):")
-        # st.code("\n".join(lines[:10]))
+        # Show file preview for debugging
+        st.subheader("File Preview")
+        st.code("\n".join(lines[:min(10, len(lines))]))
         
+        # Process metadata while skipping comment lines
         for i, line in enumerate(lines):
-            # English version
-            if line.lower().startswith('# start date:'):
-                try:
-                    date_text = line.split(':')[1].strip()
-                    metadata['start_date'] = datetime.strptime(date_text, '%Y%m%d')
-                except Exception as date_err:
-                    st.warning(f"Could not parse start date: {date_text}. Error: {str(date_err)}")
-                    
-            elif line.lower().startswith('# end date:'):
-                try:
-                    date_text = line.split(':')[1].strip()
-                    metadata['end_date'] = datetime.strptime(date_text, '%Y%m%d')
-                except Exception as date_err:
-                    st.warning(f"Could not parse end date: {date_text}. Error: {str(date_err)}")
-            
-            # Find header row - multiple formats supported
-            elif any(header in line.lower() for header in 
-                    ['week,active users', 'ennesima settimana,utenti attivi', 
-                     'settimana,utenti attivi', 'date,users', 'data,utenti']):
+            if line.strip().startswith('#'):
+                # Try to extract dates from comments
+                if 'start date:' in line.lower():
+                    try:
+                        date_text = line.split(':')[1].strip()
+                        metadata['start_date'] = datetime.strptime(date_text, '%Y%m%d')
+                    except:
+                        pass
+                        
+                elif 'end date:' in line.lower():
+                    try:
+                        date_text = line.split(':')[1].strip()
+                        metadata['end_date'] = datetime.strptime(date_text, '%Y%m%d')
+                    except:
+                        pass
+            elif line.strip():
+                # This is the first non-comment line with content - should be the header
                 data_start_index = i
+                has_header = True
                 break
-                
-        # If we couldn't find the dates, set defaults
-        if metadata['start_date'] is None:
-            metadata['start_date'] = datetime.now() - timedelta(days=90)
-            st.warning("Start date not found in file. Using 90 days ago as default.")
-            
-        if metadata['end_date'] is None:
-            metadata['end_date'] = datetime.now()
-            st.warning("End date not found in file. Using today as default.")
         
-        # Verify minimum data period
-        if (metadata['end_date'] - metadata['start_date']).days < 56:
-            st.warning("At least 8 weeks of data are recommended for accurate forecasts.")
-        
-        # If header row not found, look for any plausible header
-        if data_start_index == 0:
-            for i, line in enumerate(lines):
-                if any(keyword in line.lower() for keyword in 
-                       ['week', 'settimana', 'user', 'utent', 'active', 'attiv']):
-                    data_start_index = i
-                    break
-                    
-        # If still not found, show error
-        if data_start_index == 0:
-            st.error("Could not find data header row. Please check file format.")
+        if not has_header:
+            st.error("No data found in file after comment lines. Please check file format.")
             return None
         
-        # Find the end of data section
-        data_end_index = data_start_index + 1
-        while data_end_index < len(lines):
-            line = lines[data_end_index].strip()
-            if not line or not any(c.isdigit() for c in line[:10]):
-                break
-            data_end_index += 1
+        # Extract data section (header + data)
+        data_csv = '\n'.join(lines[data_start_index:])
         
-        # Extract data section as CSV
-        data_csv = '\n'.join(lines[data_start_index:data_end_index])
-        df = pd.read_csv(StringIO(data_csv))
+        # Read the CSV
+        try:
+            df = pd.read_csv(StringIO(data_csv))
+        except Exception as csv_err:
+            st.error(f"Error parsing CSV data: {str(csv_err)}")
+            return None
+            
+        # Show the actual loaded data
+        st.subheader("Loaded Data Preview")
+        st.dataframe(df.head())
         
-        # Identify columns based on headers (English or Italian)
+        # Try to identify columns based on headers (English or Italian)
         date_col = None
         users_col = None
         
+        # First try exact matches
         for col in df.columns:
             if col.lower() in ['week', 'settimana', 'ennesima settimana', 'date', 'data']:
                 date_col = col
             if col.lower() in ['active users', 'utenti attivi', 'users', 'utenti']:
                 users_col = col
-                
-        if date_col is None or users_col is None:
-            st.error(f"Could not identify date and users columns. Found columns: {df.columns.tolist()}")
-            return None
+        
+        # If not found, try partial matches
+        if date_col is None:
+            for col in df.columns:
+                if any(keyword in col.lower() for keyword in ['week', 'settimana', 'date', 'data', 'day', 'giorno']):
+                    date_col = col
+                    break
+                    
+        if users_col is None:
+            for col in df.columns:
+                if any(keyword in col.lower() for keyword in ['user', 'utent', 'visit', 'active', 'attiv']):
+                    users_col = col
+                    break
+        
+        # If still not found and we have at least 2 columns, use the first and second columns
+        if (date_col is None or users_col is None) and len(df.columns) >= 2:
+            if date_col is None:
+                date_col = df.columns[0]
+                st.info(f"Using '{date_col}' as date column")
             
+            if users_col is None:
+                # Use the first non-date column
+                for col in df.columns:
+                    if col != date_col:
+                        users_col = col
+                        st.info(f"Using '{users_col}' as users column")
+                        break
+                
+        # If still can't identify columns, let user select
+        if date_col is None or users_col is None:
+            st.warning("Could not automatically identify required columns.")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                date_col = st.selectbox("Select date/time column:", options=df.columns)
+            
+            with col2:
+                users_col = st.selectbox("Select users/traffic column:", 
+                                       options=[c for c in df.columns if c != date_col])
+                
+        # If we couldn't find the metadata dates, try to infer from data
+        if metadata['start_date'] is None or metadata['end_date'] is None:
+            # Try to process the date column to infer date range
+            try:
+                # For week format
+                if 'week' in date_col.lower() or 'settimana' in date_col.lower():
+                    # If we have numeric weeks, estimate dates
+                    if pd.to_numeric(df[date_col], errors='coerce').notna().any():
+                        metadata['start_date'] = datetime.now() - timedelta(days=90)
+                        metadata['end_date'] = datetime.now()
+                else:
+                    # Try to parse as dates
+                    temp_dates = pd.to_datetime(df[date_col], errors='coerce')
+                    if not temp_dates.isna().all():
+                        metadata['start_date'] = temp_dates.min().to_pydatetime()
+                        metadata['end_date'] = temp_dates.max().to_pydatetime()
+            except:
+                pass
+                
+        # If still missing dates, use defaults
+        if metadata['start_date'] is None:
+            metadata['start_date'] = datetime.now() - timedelta(days=90)
+            st.info("Using 90 days ago as start date")
+            
+        if metadata['end_date'] is None:
+            metadata['end_date'] = datetime.now()
+            st.info("Using today as end date")
+        
+        # Create standardized dataframe
+        result_df = pd.DataFrame()
+        
         # Handle Week vs Date format
         if 'week' in date_col.lower() or 'settimana' in date_col.lower():
             # For week format, calculate dates from start date
-            df['Date'] = metadata['start_date'] + pd.to_timedelta(pd.to_numeric(df[date_col], errors='coerce') * 7, unit='D')
+            try:
+                weeks = pd.to_numeric(df[date_col], errors='coerce')
+                result_df['Date'] = metadata['start_date'] + pd.to_timedelta(weeks * 7, unit='D')
+            except Exception as week_err:
+                st.error(f"Error converting weeks to dates: {str(week_err)}")
+                return None
         else:
             # For date format, parse the date
             try:
-                df['Date'] = pd.to_datetime(df[date_col])
+                result_df['Date'] = pd.to_datetime(df[date_col], errors='coerce')
             except:
                 try:
                     # Try European format
-                    df['Date'] = pd.to_datetime(df[date_col], format='%d/%m/%Y')
-                except:
-                    st.error(f"Could not convert '{date_col}' column to dates")
+                    result_df['Date'] = pd.to_datetime(df[date_col], format='%d/%m/%Y', errors='coerce')
+                except Exception as date_err:
+                    st.error(f"Could not convert '{date_col}' column to dates: {str(date_err)}")
                     return None
-            
-        df = df.rename(columns={users_col: 'Users'})
-        df['Users'] = pd.to_numeric(df['Users'], errors='coerce')
-        df = df.dropna(subset=['Users', 'Date'])
         
-        return df[['Date', 'Users']]
+        # Convert users column to numeric
+        result_df['Users'] = pd.to_numeric(df[users_col], errors='coerce')
+        
+        # Drop rows with missing data
+        result_df = result_df.dropna(subset=['Users', 'Date'])
+        
+        if len(result_df) == 0:
+            st.error("No valid data found after processing.")
+            return None
+            
+        st.success(f"Successfully loaded {len(result_df)} data points")
+        return result_df[['Date', 'Users']]
         
     except Exception as e:
         st.error(f"Error loading GA4 data: {str(e)}")
@@ -860,14 +922,14 @@ def main():
     if data_source == "Current traffic trend":
         st.info("""
         **How to prepare traffic trend data:**
-        1. Create a CSV file with two columns: 'Date' and 'Organic Traffic'
-        2. The 'Date' column should be in a standard date format (YYYY-MM-DD)
-        3. The 'Organic Traffic' column should contain numeric values
+        1. You can use the same GA4 export file - the app will automatically detect relevant columns
+        2. The tool will identify date/time columns and traffic/users columns automatically
+        3. Comment lines (starting with #) will be automatically skipped
         
         ⚠️ **Important**: 
         - Include data for at least 6 months for meaningful analysis
-        - Ensure the dates are in chronological order
-        - Both English and Italian headers are supported (Data, Traffico Organico)
+        - The file can use either commas or semicolons as separators
+        - Both English and Italian exports are fully supported
         """)
     elif data_source == "Google Search Console":
         st.info("""
@@ -914,21 +976,98 @@ def main():
                     content = content.replace(';;', '')
                     content = content.replace(';', ',')
                 
-                df = pd.read_csv(StringIO(content))
+                # Skip comment lines (lines starting with #)
+                lines = content.split('\n')
+                data_start_index = 0
+                has_header = False
                 
-                # Check for Italian column names
-                if 'Data' in df.columns and 'Traffico Organico' in df.columns:
-                    df = df.rename(columns={
-                        'Data': 'Date',
-                        'Traffico Organico': 'Organic Traffic'
-                    })
+                for i, line in enumerate(lines):
+                    if line.strip() and not line.strip().startswith('#'):
+                        # This is the first non-comment line - should be the header
+                        data_start_index = i
+                        has_header = True
+                        break
                 
-                # Ensure required columns exist
-                if 'Date' not in df.columns or 'Organic Traffic' not in df.columns:
-                    st.error("Required columns not found. File must contain 'Date' and 'Organic Traffic' columns.")
+                if not has_header:
+                    st.error("No data found in file. Please check the file format.")
                     st.stop()
                 
-                df['Date'] = pd.to_datetime(df['Date'])
+                # Extract data section as CSV
+                data_csv = '\n'.join(lines[data_start_index:])
+                df = pd.read_csv(StringIO(data_csv))
+                
+                # For traffic trend, we need to detect or create Date and Organic Traffic columns
+                # from the actual columns in the GA4 file
+                
+                # First, show preview of loaded columns
+                st.subheader("Data Preview")
+                st.dataframe(df.head())
+                
+                # Try to identify date column
+                date_col = None
+                for col in df.columns:
+                    if any(keyword in col.lower() for keyword in ['date', 'data', 'week', 'settimana', 'giorno', 'day']):
+                        date_col = col
+                        break
+                        
+                # If no date column found, use the first column as date
+                if date_col is None and len(df.columns) > 0:
+                    date_col = df.columns[0]
+                    st.info(f"Using '{date_col}' as the date column")
+                
+                # Try to identify traffic column
+                traffic_col = None
+                for col in df.columns:
+                    if any(keyword in col.lower() for keyword in 
+                           ['user', 'utent', 'traffic', 'traffico', 'visit', 'session', 'active', 'attiv']):
+                        traffic_col = col
+                        break
+                        
+                # If no traffic column found, use the second column
+                if traffic_col is None and len(df.columns) > 1:
+                    traffic_col = df.columns[1]
+                    st.info(f"Using '{traffic_col}' as the traffic column")
+                
+                # If columns couldn't be identified, let user select
+                if date_col is None or traffic_col is None:
+                    st.error("Could not identify required columns automatically.")
+                    if len(df.columns) >= 2:
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            date_col = st.selectbox("Select date column", options=df.columns)
+                        with col2:
+                            traffic_col = st.selectbox("Select traffic column", 
+                                                     options=[c for c in df.columns if c != date_col])
+                    else:
+                        st.error("File must contain at least two columns.")
+                        st.stop()
+                
+                # Create standardized dataframe with Date and Organic Traffic columns
+                standardized_df = pd.DataFrame()
+                
+                # Convert date column
+                try:
+                    standardized_df['Date'] = pd.to_datetime(df[date_col])
+                except:
+                    try:
+                        # Try European format
+                        standardized_df['Date'] = pd.to_datetime(df[date_col], format='%d/%m/%Y')
+                    except:
+                        st.error(f"Could not convert '{date_col}' to dates. Please ensure it contains valid dates.")
+                        st.stop()
+                
+                # Convert traffic column to numeric
+                standardized_df['Organic Traffic'] = pd.to_numeric(df[traffic_col], errors='coerce')
+                
+                # Drop rows with missing data
+                standardized_df = standardized_df.dropna()
+                
+                if len(standardized_df) == 0:
+                    st.error("No valid data found after processing.")
+                    st.stop()
+                    
+                # Use the standardized dataframe for analysis
+                df = standardized_df
                 
                 if st.button("Generate traffic analysis"):
                     with st.spinner("Analyzing data..."):
