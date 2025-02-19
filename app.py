@@ -153,49 +153,43 @@ def prepare_analytics_data(df):
 
 
 def forecast_with_prophet(df, metric, forecast_months, data_source="GSC"):
-    """Performs forecasting using Facebook Prophet, con trasformazione log per certe metriche."""
+    """Performs forecasting using Facebook Prophet, with log transform for certain metrics."""
     try:
         prophet_df = df[['Date', metric]].rename(columns={'Date': 'ds', metric: 'y'})
         
-        # Decidiamo se applicare il log transform (Clicks, Impressions, Users)
+        # Decide whether to apply log transform (only for Clicks, Impressions, Users)
         apply_log_transform = metric in ["Clicks", "Impressions", "Users"]
         
-        # Se è Position, usiamo un mini-modello Prophet "additive" invece che "multiplicative"
+        # If Position, use specialized model parameters
         if metric == "Position":
             model = Prophet(
                 yearly_seasonality=True,
-                weekly_seasonality=False,
+                weekly_seasonality=False, 
                 daily_seasonality=False,
-                seasonality_mode='additive'
+                seasonality_mode='additive',
+                changepoint_prior_scale=0.03,  # More flexible for position
+                seasonality_prior_scale=5      # Less emphasis on seasonality for position
             )
         else:
-            # Altrimenti usiamo la configurazione standard
+            # Otherwise use standard configuration
             model = create_prophet_model(data_source)
+            
+            # Apply log transform only for non-Position metrics if needed
+            if apply_log_transform:
+                prophet_df['y'] = np.log1p(prophet_df['y'])  # log(y+1)
         
-        # Applichiamo la trasformazione log se necessario
-        # TEMPORARILY DISABLED LOG TRANSFORMATION
-        # if apply_log_transform:
-        #     prophet_df['y'] = np.log1p(prophet_df['y'])  # log(y+1)
-        
-        # Fit del modello
+        # Fit model
         model.fit(prophet_df)
         
-        # Predire sul futuro
+        # Predict future
         future = model.make_future_dataframe(periods=forecast_months, freq='MS')
         forecast = model.predict(future)
         
-        # Display changepoints for debugging (comment this in production)
-        if st.checkbox(f"Show changepoints visualization for {metric}", key=f"changepoints_{metric}_{data_source}"):
-            fig = model.plot(forecast)
-            import matplotlib.pyplot as plt
-            st.pyplot(fig)
+        # If we applied log transform, convert back to original scale
+        if apply_log_transform and metric != "Position":
+            forecast[['yhat', 'yhat_lower', 'yhat_upper']] = np.expm1(forecast[['yhat', 'yhat_lower', 'yhat_upper']])
         
-        # Se abbiamo fatto la trasformazione, torniamo in scala originale
-        # TEMPORARILY DISABLED LOG TRANSFORMATION
-        # if apply_log_transform:
-        #     forecast[['yhat', 'yhat_lower', 'yhat_upper']] = np.expm1(forecast[['yhat', 'yhat_lower', 'yhat_upper']])
-        
-        # Rinominiamo le colonne
+        # Rename columns
         result = forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper']]
         result = result.rename(columns={
             'ds': 'Date',
