@@ -185,7 +185,7 @@ def forecast_with_prophet(df, metric, forecast_months, data_source="GSC"):
         forecast = model.predict(future)
         
         # Display changepoints for debugging (comment this in production)
-        if st.checkbox("Show changepoints visualization"):
+        if st.checkbox(f"Show changepoints visualization for {metric}", key=f"changepoints_{metric}_{data_source}"):
             fig = model.plot(forecast)
             import matplotlib.pyplot as plt
             st.pyplot(fig)
