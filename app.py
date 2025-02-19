@@ -153,12 +153,12 @@ def prepare_analytics_data(df):
 
 
 def forecast_with_prophet(df, metric, forecast_months, data_source="GSC"):
-    """Performs forecasting using Facebook Prophet, with log transform for certain metrics."""
+    """Performs forecasting using Facebook Prophet, with log transform for specific metrics only."""
     try:
         prophet_df = df[['Date', metric]].rename(columns={'Date': 'ds', metric: 'y'})
         
-        # Decide whether to apply log transform (only for Clicks, Impressions, Users)
-        apply_log_transform = metric in ["Clicks", "Impressions", "Users"]
+        # Apply log transform ONLY for Impressions and Users, NOT for Clicks
+        apply_log_transform = metric in ["Impressions", "Users"]
         
         # If Position, use specialized model parameters
         if metric == "Position":
@@ -170,11 +170,12 @@ def forecast_with_prophet(df, metric, forecast_months, data_source="GSC"):
                 changepoint_prior_scale=0.03,  # More flexible for position
                 seasonality_prior_scale=5      # Less emphasis on seasonality for position
             )
-        else:
-            # Otherwise use standard configuration
+        # Special case for Clicks - no log transform
+        elif metric == "Clicks":
             model = create_prophet_model(data_source)
-            
-            # Apply log transform only for non-Position metrics if needed
+        # For Impressions and Users - use log transform
+        else:
+            model = create_prophet_model(data_source)
             if apply_log_transform:
                 prophet_df['y'] = np.log1p(prophet_df['y'])  # log(y+1)
         
@@ -186,7 +187,7 @@ def forecast_with_prophet(df, metric, forecast_months, data_source="GSC"):
         forecast = model.predict(future)
         
         # If we applied log transform, convert back to original scale
-        if apply_log_transform and metric != "Position":
+        if apply_log_transform:
             forecast[['yhat', 'yhat_lower', 'yhat_upper']] = np.expm1(forecast[['yhat', 'yhat_lower', 'yhat_upper']])
         
         # Rename columns
