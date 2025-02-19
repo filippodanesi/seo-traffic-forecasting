@@ -172,7 +172,7 @@ def forecast_with_prophet(df, metric, forecast_months, data_source="GSC"):
             model = create_prophet_model(data_source)
         
         # Applichiamo la trasformazione log se necessario
-        if apply_log_transform:
+        # if apply_log_transform:
             # prophet_df['y'] = np.log1p(prophet_df['y'])  # log(y+1)
         
         # Fit del modello
