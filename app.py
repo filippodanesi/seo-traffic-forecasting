@@ -73,45 +73,118 @@ def load_gsc_data(uploaded_file, min_months=14):
 
 @st.cache_data
 def load_ga4_data(uploaded_file):
-    """Loads and validates data from Google Analytics 4"""
+    """Loads and validates data from Google Analytics 4 with improved error handling"""
     try:
         content = uploaded_file.read().decode('utf8')
         lines = content.split('\n')
         
-        # Extract metadata
-        metadata = {}
+        # Extract metadata with better error handling
+        metadata = {
+            'start_date': None,
+            'end_date': None
+        }
         data_start_index = 0
+        
+        # Try to find metadata and data start
         for i, line in enumerate(lines):
+            line = line.strip()
             if line.startswith('# Start date:'):
-                metadata['start_date'] = datetime.strptime(line.split(':')[1].strip(), '%Y%m%d')
+                try:
+                    date_str = line.split(':')[1].strip()
+                    metadata['start_date'] = datetime.strptime(date_str, '%Y%m%d')
+                except (IndexError, ValueError):
+                    st.warning(f"Could not parse start date from: {line}")
             elif line.startswith('# End date:'):
-                metadata['end_date'] = datetime.strptime(line.split(':')[1].strip(), '%Y%m%d')
-            elif 'Week,Active Users' in line:
+                try:
+                    date_str = line.split(':')[1].strip()
+                    metadata['end_date'] = datetime.strptime(date_str, '%Y%m%d')
+                except (IndexError, ValueError):
+                    st.warning(f"Could not parse end date from: {line}")
+            elif 'Week,Active Users' in line or 'Day,Active Users' in line or 'Month,Active Users' in line:
+                data_start_index = i
+                break
+            # Alternative format detection
+            elif any(x in line for x in ['Users', 'Sessions', 'Pageviews']) and i > 5:
                 data_start_index = i
                 break
         
-        # Verify minimum data period (8 weeks)
-        if (metadata['end_date'] - metadata['start_date']).days < 56:  # 8 weeks
-            st.warning("At least 8 weeks of data are recommended for accurate forecasts.")
+        # If no data section found, look for other possible headers
+        if data_start_index == 0:
+            for i, line in enumerate(lines):
+                if any(x in line for x in ['Date', 'Week', 'Day', 'Month']) and any(x in line for x in ['Users', 'Visitors', 'Sessions']):
+                    data_start_index = i
+                    break
+        
+        if data_start_index == 0:
+            raise ValueError("Could not find data section in the file. Please check the file format.")
+            
+        # Verify minimum data period if dates are available
+        if metadata['start_date'] is not None and metadata['end_date'] is not None:
+            if (metadata['end_date'] - metadata['start_date']).days < 56:  # 8 weeks
+                st.warning("At least 8 weeks of data are recommended for accurate forecasts.")
+        else:
+            st.warning("Could not determine data period. Make sure to have at least 8 weeks of data.")
         
         # Find end of temporal data
         data_end_index = data_start_index + 1
         while data_end_index < len(lines):
             line = lines[data_end_index].strip()
-            if not line or not line[0].isdigit():
+            if not line or not (line[0].isdigit() or line.startswith('20')):  # Checking for date format
                 break
             data_end_index += 1
         
-        # Create DataFrame only with temporal data
+        # Create DataFrame from the data section
         data_csv = '\n'.join(lines[data_start_index:data_end_index])
         df = pd.read_csv(StringIO(data_csv))
         
-        # Convert week number to actual dates
-        df['Date'] = metadata['start_date'] + pd.to_timedelta(df['Week'] * 7, unit='D')
+        # Try to extract date information
+        date_column = None
+        for col in df.columns:
+            if any(x in col.lower() for x in ['date', 'day', 'week', 'month']):
+                date_column = col
+                break
+        
+        if date_column is None:
+            raise ValueError("Could not find date column in the file")
+            
+        # Try to find users column
+        users_column = None
+        for col in df.columns:
+            if any(x in col.lower() for x in ['users', 'visitors', 'active users']):
+                users_column = col
+                break
+                
+        if users_column is None:
+            raise ValueError("Could not find users column in the file")
+        
+        # Handle different date formats
+        try:
+            df['Date'] = pd.to_datetime(df[date_column])
+        except:
+            if 'Week' in df.columns:
+                # If using Week column and we have start_date
+                if metadata['start_date'] is not None:
+                    df['Date'] = metadata['start_date'] + pd.to_timedelta(df['Week'] * 7, unit='D')
+                else:
+                    # Assume weeks are numbered from start of current year
+                    current_year = datetime.now().year
+                    df['Date'] = pd.to_datetime(f'{current_year}-01-01') + pd.to_timedelta(df['Week'] * 7, unit='D')
+                    st.warning("Could not determine start date. Assuming weeks are from beginning of current year.")
+            else:
+                raise ValueError(f"Could not convert {date_column} to datetime format")
         
         # Rename users column for uniformity
-        df = df.rename(columns={'Active Users': 'Users'})
+        df = df.rename(columns={users_column: 'Users'})
         
+        # Convert Users to numeric, handling potential formatting issues
+        df['Users'] = pd.to_numeric(df['Users'].astype(str).str.replace(',', ''), errors='coerce')
+        
+        # Drop rows with missing values
+        df = df.dropna(subset=['Date', 'Users'])
+        
+        if df.empty:
+            raise ValueError("No valid data found after processing")
+            
         return df[['Date', 'Users']]
         
     except Exception as e:
