@@ -71,7 +71,6 @@ def load_gsc_data(uploaded_file, min_months=14):
         return None
 
 @st.cache_data
-@st.cache_data
 def load_ga4_data(uploaded_file):
     """Loads and validates data from Google Analytics 4, supporting metadata in Italian and English"""
     try:
@@ -88,10 +87,10 @@ def load_ga4_data(uploaded_file):
             'end_date': ['# End date:', '# Data di fine:']
         }
         
-        # Column header patterns (for finding data start)
-        header_patterns = ['Week,Active Users', 'Settimana,Utenti attivi']
-        
+        # Search for metadata and header row
         for i, line in enumerate(lines):
+            line = line.strip()
+            
             # Check for start date
             for pattern in metadata_patterns['start_date']:
                 if line.startswith(pattern):
@@ -106,14 +105,10 @@ def load_ga4_data(uploaded_file):
                     metadata['end_date'] = datetime.strptime(date_str, '%Y%m%d')
                     break
             
-            # Check for data header
-            for pattern in header_patterns:
-                if pattern in line:
-                    data_start_index = i
-                    break
-            
-            # If we found the data header, stop looking
-            if data_start_index > 0:
+            # Check for data header - including "Ennesima settimana" as seen in the file
+            if ("Week" in line or "Settimana" in line or "Ennesima settimana" in line) and \
+               ("Active Users" in line or "Utenti attivi" in line):
+                data_start_index = i
                 break
         
         # Verify we found the metadata
@@ -126,39 +121,81 @@ def load_ga4_data(uploaded_file):
             if (metadata['end_date'] - metadata['start_date']).days < 56:  # 8 weeks
                 st.warning("Sono consigliati almeno 8 settimane di dati per previsioni accurate.")
         
+        # If we haven't found the data header, try again with more flexible criteria
+        if data_start_index == 0:
+            for i, line in enumerate(lines):
+                if i < 20:  # Only check the first 20 lines
+                    # Look for any line that contains both week-related and user-related terms
+                    if (("week" in line.lower() or "settimana" in line.lower()) and
+                        ("user" in line.lower() or "utent" in line.lower() or "attiv" in line.lower())):
+                        data_start_index = i
+                        break
+        
+        if data_start_index == 0:
+            raise ValueError("Impossibile trovare l'intestazione dei dati nel file CSV")
+        
         # Find end of temporal data
         data_end_index = data_start_index + 1
         while data_end_index < len(lines):
             line = lines[data_end_index].strip()
-            if not line or not line[0].isdigit():
+            if not line or not any(c.isdigit() for c in line):
                 break
             data_end_index += 1
         
-        # Create DataFrame only with temporal data
-        data_csv = '\n'.join(lines[data_start_index:data_end_index])
-        df = pd.read_csv(StringIO(data_csv))
+        # Get the header line
+        header_line = lines[data_start_index].strip()
+        # Determine separator (comma or semicolon)
+        separator = ',' if ',' in header_line else ';'
         
-        # If the column is called 'Settimana', rename it to 'Week'
-        if 'Settimana' in df.columns:
-            df = df.rename(columns={'Settimana': 'Week'})
+        # Create header for the CSV parser
+        header_columns = header_line.split(separator)
         
-        # If the column is called 'Utenti attivi', rename it to 'Active Users'
-        user_column = None
-        if 'Active Users' in df.columns:
-            user_column = 'Active Users'
-        elif 'Utenti attivi' in df.columns:
-            user_column = 'Utenti attivi'
-            df = df.rename(columns={'Utenti attivi': 'Active Users'})
-        else:
-            # Try to find a column that might contain user data
-            for col in df.columns:
-                if 'utent' in col.lower() or 'user' in col.lower():
-                    user_column = col
-                    df = df.rename(columns={col: 'Active Users'})
-                    break
-            
-            if user_column is None:
-                raise ValueError("Non è stata trovata alcuna colonna relativa agli utenti nel file CSV")
+        # Find the week column and user column indices
+        week_column_idx = -1
+        user_column_idx = -1
+        
+        for i, col in enumerate(header_columns):
+            col_lower = col.lower()
+            # Find week column
+            if "week" in col_lower or "settimana" in col_lower:
+                week_column_idx = i
+            # Find user column
+            if "user" in col_lower or "utent" in col_lower or "attiv" in col_lower:
+                user_column_idx = i
+        
+        if week_column_idx == -1 or user_column_idx == -1:
+            raise ValueError(f"Non è possibile identificare le colonne richieste nell'intestazione: {header_line}")
+        
+        # Manually create the DataFrame
+        data_rows = []
+        for i in range(data_start_index + 1, data_end_index):
+            line = lines[i].strip()
+            if not line:
+                continue
+                
+            values = line.split(separator)
+            if len(values) >= max(week_column_idx, user_column_idx) + 1:
+                try:
+                    week_value = values[week_column_idx].strip()
+                    user_value = values[user_column_idx].strip()
+                    
+                    # Convert to appropriate types
+                    week_num = int(week_value)
+                    user_count = int(user_value)
+                    
+                    data_rows.append({
+                        'Week': week_num,
+                        'Users': user_count
+                    })
+                except (ValueError, IndexError) as e:
+                    st.warning(f"Saltata riga con formato non valido: {line}")
+                    continue
+        
+        # Create DataFrame from collected rows
+        df = pd.DataFrame(data_rows)
+        
+        if len(df) == 0:
+            raise ValueError("Nessun dato valido trovato nel file CSV")
         
         # Convert week number to actual dates
         if 'start_date' in metadata:
@@ -170,13 +207,11 @@ def load_ga4_data(uploaded_file):
             first_week_of_current_year = today.replace(month=1, day=1)
             df['Date'] = first_week_of_current_year + pd.to_timedelta(df['Week'] * 7, unit='D')
         
-        # Rename users column for uniformity
-        df = df.rename(columns={'Active Users': 'Users'})
-        
         return df[['Date', 'Users']]
         
     except Exception as e:
         st.error(f"Errore nel caricamento dei dati GA4: {str(e)}")
+        st.error(f"Dettaglio eccezione: {type(e).__name__}")
         return None
 
 def prepare_search_console_data(df):
