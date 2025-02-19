@@ -243,163 +243,39 @@ def load_ga4_data(uploaded_file):
         lines = content.split('\n')
         
         # Extract metadata
-        metadata = {'start_date': None, 'end_date': None}  # Initialize with defaults
+        metadata = {}
         data_start_index = 0
-        
-        # Show file preview for debugging
-        st.info(f"Anteprima file (prime 10 righe):")
-        st.code("\n".join(lines[:10]))
-        
         for i, line in enumerate(lines):
-            # English version
             if line.startswith('# Start date:'):
-                try:
-                    metadata['start_date'] = datetime.strptime(line.split(':')[1].strip(), '%Y%m%d')
-                except:
-                    pass
+                metadata['start_date'] = datetime.strptime(line.split(':')[1].strip(), '%Y%m%d')
             elif line.startswith('# End date:'):
-                try:
-                    metadata['end_date'] = datetime.strptime(line.split(':')[1].strip(), '%Y%m%d')
-                except:
-                    pass
-            
-            # Italian version
-            elif line.startswith('# Data di inizio:'):
-                try:
-                    metadata['start_date'] = datetime.strptime(line.split(':')[1].strip(), '%Y%m%d')
-                except:
-                    pass
-            elif line.startswith('# Data di fine:'):
-                try:
-                    metadata['end_date'] = datetime.strptime(line.split(':')[1].strip(), '%Y%m%d')
-                except:
-                    pass
-                
-            # Look for header row
-            elif any(header in line for header in ['Week,Active Users', 'Settimana,Utenti attivi', 'Date,Users', 'Data,Utenti']):
+                metadata['end_date'] = datetime.strptime(line.split(':')[1].strip(), '%Y%m%d')
+            elif 'Week,Active Users' in line:
                 data_start_index = i
                 break
         
-        # If dates are still missing, try to infer from data
-        if metadata['start_date'] is None or metadata['end_date'] is None:
-            # Try to find any header row if not found yet
-            if data_start_index == 0:
-                for i, line in enumerate(lines):
-                    if any(col in line for col in ['User', 'Utent', 'Active', 'Attiv', 'Week', 'Settimana']):
-                        data_start_index = i
-                        break
-            
-            # Process data to get a dataframe
-            data_end_index = data_start_index + 1
-            while data_end_index < len(lines):
-                line = lines[data_end_index].strip()
-                if not line or (not line[0].isdigit() and line[0] not in '0123456789'):
-                    break
-                data_end_index += 1
-            
-            data_csv = '\n'.join(lines[data_start_index:data_end_index])
-            try:
-                temp_df = pd.read_csv(StringIO(data_csv))
-                
-                # Try to identify date column
-                date_col = None
-                for col in temp_df.columns:
-                    if col.lower() in ['week', 'settimana', 'date', 'data']:
-                        date_col = col
-                        break
-                
-                if date_col and metadata['start_date'] is None:
-                    # Use earliest date in data
-                    metadata['start_date'] = datetime.now() - timedelta(days=90)
-                
-                if date_col and metadata['end_date'] is None:
-                    # Use today as end date
-                    metadata['end_date'] = datetime.now()
-                    
-            except Exception as parse_err:
-                st.warning(f"Impossibile analizzare i dati: {str(parse_err)}")
-        
-        # If we still don't have dates, use defaults
-        if metadata['start_date'] is None:
-            metadata['start_date'] = datetime.now() - timedelta(days=90)
-            st.warning("Data di inizio non trovata. Usando 90 giorni fa come default.")
-            
-        if metadata['end_date'] is None:
-            metadata['end_date'] = datetime.now()
-            st.warning("Data di fine non trovata. Usando oggi come default.")
-        
         # Verify minimum data period
         if (metadata['end_date'] - metadata['start_date']).days < 56:
-            st.warning("Si raccomandano almeno 8 settimane di dati per previsioni accurate.")
+            st.warning("At least 8 weeks of data are recommended for accurate forecasts.")
         
         # Process data
-        # If we haven't found the data start index yet, try a few common headers
-        if data_start_index == 0:
-            for i, line in enumerate(lines):
-                if any(header in line for header in [
-                    'Week,Active Users', 'Settimana,Utenti attivi', 
-                    'Date,Users', 'Data,Utenti',
-                    'Week,Users', 'Settimana,Utenti'
-                ]):
-                    data_start_index = i
-                    break
-        
-        # If still not found, show error with preview
-        if data_start_index == 0:
-            st.error("Impossibile trovare l'intestazione dei dati. Controlla il formato del file.")
-            return None
-        
         data_end_index = data_start_index + 1
         while data_end_index < len(lines):
             line = lines[data_end_index].strip()
-            if not line or (not line[0].isdigit() and not any(c.isdigit() for c in line[:10])):
+            if not line or not line[0].isdigit():
                 break
             data_end_index += 1
         
         data_csv = '\n'.join(lines[data_start_index:data_end_index])
         df = pd.read_csv(StringIO(data_csv))
         
-        # Handle different column formats
-        date_col = None
-        users_col = None
-        
-        for col in df.columns:
-            if col.lower() in ['week', 'settimana', 'date', 'data']:
-                date_col = col
-            if col.lower() in ['active users', 'utenti attivi', 'users', 'utenti']:
-                users_col = col
-                
-        if date_col is None or users_col is None:
-            st.error(f"Impossibile identificare le colonne per data e utenti. Colonne trovate: {df.columns.tolist()}")
-            return None
-            
-        # Handle Week vs Date format
-        if date_col.lower() in ['week', 'settimana']:
-            df['Date'] = metadata['start_date'] + pd.to_timedelta(df[date_col] * 7, unit='D')
-        else:
-            # Try different date formats
-            try:
-                df['Date'] = pd.to_datetime(df[date_col])
-            except:
-                try:
-                    # Try European format
-                    df['Date'] = pd.to_datetime(df[date_col], format='%d/%m/%Y')
-                except:
-                    st.error(f"Impossibile convertire la colonna '{date_col}' in date")
-                    return None
-            
-        df = df.rename(columns={users_col: 'Users'})
-        
-        # Show preview of processed data
-        st.info("Anteprima dei dati processati:")
-        st.dataframe(df.head())
+        df['Date'] = metadata['start_date'] + pd.to_timedelta(df['Week'] * 7, unit='D')
+        df = df.rename(columns={'Active Users': 'Users'})
         
         return df[['Date', 'Users']]
         
     except Exception as e:
-        st.error(f"Errore nel caricamento dei dati GA4: {str(e)}")
-        import traceback
-        st.error(f"Traceback: {traceback.format_exc()}")
+        st.error(f"Error loading GA4 data: {str(e)}")
         return None
 
 def prepare_search_console_data(df):
