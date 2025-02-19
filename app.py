@@ -20,7 +20,8 @@ def create_prophet_model(data_source="GSC"):
             yearly_seasonality=True,
             weekly_seasonality=False,
             daily_seasonality=False,
-            seasonality_mode='multiplicative'  # used only if the metric is not "Position"
+            seasonality_mode='multiplicative',  # used only if the metric is not "Position"
+            changepoint_prior_scale=0.05,  # more conservative in variations (ADDED)
         )
     else:  # GA4
         return Prophet(
@@ -172,8 +173,9 @@ def forecast_with_prophet(df, metric, forecast_months, data_source="GSC"):
             model = create_prophet_model(data_source)
         
         # Applichiamo la trasformazione log se necessario
-        if apply_log_transform:
-            prophet_df['y'] = np.log1p(prophet_df['y'])  # log(y+1)
+        # TEMPORARILY DISABLED LOG TRANSFORMATION
+        # if apply_log_transform:
+        #     prophet_df['y'] = np.log1p(prophet_df['y'])  # log(y+1)
         
         # Fit del modello
         model.fit(prophet_df)
@@ -182,9 +184,16 @@ def forecast_with_prophet(df, metric, forecast_months, data_source="GSC"):
         future = model.make_future_dataframe(periods=forecast_months, freq='MS')
         forecast = model.predict(future)
         
+        # Display changepoints for debugging (comment this in production)
+        if st.checkbox("Show changepoints visualization"):
+            fig = model.plot(forecast)
+            import matplotlib.pyplot as plt
+            st.pyplot(fig)
+        
         # Se abbiamo fatto la trasformazione, torniamo in scala originale
-        if apply_log_transform:
-            forecast[['yhat', 'yhat_lower', 'yhat_upper']] = np.expm1(forecast[['yhat', 'yhat_lower', 'yhat_upper']])
+        # TEMPORARILY DISABLED LOG TRANSFORMATION
+        # if apply_log_transform:
+        #     forecast[['yhat', 'yhat_lower', 'yhat_upper']] = np.expm1(forecast[['yhat', 'yhat_lower', 'yhat_upper']])
         
         # Rinominiamo le colonne
         result = forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper']]
