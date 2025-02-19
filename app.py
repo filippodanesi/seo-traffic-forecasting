@@ -10,10 +10,10 @@ from io import BytesIO, StringIO
 # Initial configuration
 st.set_page_config(page_title="SEO Traffic Forecasting Tool", layout="wide")
 
-def create_prophet_model(data_source="GSC"):
+def create_prophet_model(data_source="GSC", data_frequency="monthly"):
     """
     Creates a new Prophet model instance with parameters
-    optimized for the data source, consistent with monthly data.
+    optimized for the data source and frequency.
     """
     if data_source == "GSC":
         return Prophet(
@@ -21,18 +21,30 @@ def create_prophet_model(data_source="GSC"):
             weekly_seasonality=False,
             daily_seasonality=False,
             seasonality_mode='multiplicative',  # used only if the metric is not "Position"
-            changepoint_prior_scale=0.05,  # more conservative in variations (ADDED)
+            changepoint_prior_scale=0.05,  # more conservative in variations
         )
     else:  # GA4
-        return Prophet(
-            yearly_seasonality=True,
-            weekly_seasonality=False,  # disabled for monthly data
-            daily_seasonality=False,
-            seasonality_mode='multiplicative',
-            changepoint_prior_scale=0.05,  # more conservative in variations
-            seasonality_prior_scale=10,    # emphasizes seasonality
-            interval_width=0.95            # confidence interval
-        )
+        # Per dati giornalieri, abilita seasonality settimanale
+        if data_frequency == "daily":
+            return Prophet(
+                yearly_seasonality=True,
+                weekly_seasonality=True,  # Enabled for daily data
+                daily_seasonality=False,
+                seasonality_mode='multiplicative',
+                changepoint_prior_scale=0.05,
+                seasonality_prior_scale=10,
+                interval_width=0.95
+            )
+        else:  # monthly
+            return Prophet(
+                yearly_seasonality=True,
+                weekly_seasonality=False,  # disabled for monthly data
+                daily_seasonality=False,
+                seasonality_mode='multiplicative',
+                changepoint_prior_scale=0.05,
+                seasonality_prior_scale=10,
+                interval_width=0.95
+            )
 
 @st.cache_data
 def load_gsc_data(uploaded_file, min_months=14):
@@ -73,8 +85,51 @@ def load_gsc_data(uploaded_file, min_months=14):
 
 @st.cache_data
 def load_ga4_data(uploaded_file):
-    """Loads and validates data from Google Analytics 4 with improved error handling"""
+    """
+    Loads and validates data from Google Analytics 4 with improved support
+    for simple CSV format with 'Data' and 'Utenti totali' columns
+    """
     try:
+        # Prima tentiamo di caricare il file come CSV semplice
+        try:
+            df = pd.read_csv(uploaded_file)
+            
+            # Verifica se è il formato semplice (Data, Utenti totali)
+            if set(df.columns) == set(['Data', 'Utenti totali']):
+                df = df.rename(columns={
+                    'Data': 'Date',
+                    'Utenti totali': 'Users'
+                })
+                df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
+                
+                # Converte Users in numerico
+                df['Users'] = pd.to_numeric(df['Users'], errors='coerce')
+                
+                # Verifica validità dei dati
+                if df['Date'].isna().any():
+                    raise ValueError("Some dates could not be converted to a valid date format")
+                    
+                if df['Users'].isna().any():
+                    st.warning("Some user values are missing or invalid and will be ignored")
+                    df = df.dropna(subset=['Users'])
+                
+                # Controlla il periodo di dati disponibile
+                if len(df) < 30:  # Minimo 30 giorni di dati
+                    st.warning(f"Dataset contains only {len(df)} days. At least 30 days of data are recommended for accurate forecasts.")
+                
+                return df
+            
+            # Se non è il formato semplice, prova con il formato standard
+            required_cols = ['Date', 'Users']
+            if all(col in df.columns for col in required_cols):
+                df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
+                df['Users'] = pd.to_numeric(df['Users'], errors='coerce')
+                return df[['Date', 'Users']].dropna()
+                
+        except Exception as e:
+            st.warning(f"Couldn't parse as simple CSV: {str(e)}. Trying standard GA4 export format...")
+        
+        # Se fallisce, fallback al parser originale
         content = uploaded_file.read().decode('utf8')
         lines = content.split('\n')
         
@@ -191,6 +246,28 @@ def load_ga4_data(uploaded_file):
         st.error(f"Error loading GA4 data: {str(e)}")
         return None
 
+def detect_data_frequency(df):
+    """
+    Detects the frequency of the time series data
+    Returns: 'daily', 'weekly', or 'monthly'
+    """
+    if len(df) < 2:
+        return 'daily'  # Default to daily if not enough data
+        
+    df = df.sort_values('Date')
+    # Calcola la differenza mediana in giorni tra date consecutive
+    date_diffs = df['Date'].diff().dt.days.median()
+    
+    if date_diffs is None or pd.isna(date_diffs):
+        return 'daily'  # Default
+    
+    if date_diffs <= 1.5:
+        return 'daily'
+    elif date_diffs <= 7.5:
+        return 'weekly'
+    else:
+        return 'monthly'
+
 def prepare_search_console_data(df):
     """
     Prepares Google Search Console data for analysis by aggregating at monthly level
@@ -209,25 +286,48 @@ def prepare_search_console_data(df):
     
     return monthly_data.sort_values('Date')
 
-def prepare_analytics_data(df):
+def prepare_analytics_data(df, frequency='auto'):
     """
-    Prepares Google Analytics data for analysis by aggregating at monthly level
-    and using the first day of the month as the date.
+    Prepares Google Analytics data for analysis by aggregating at the appropriate level
+    based on detected frequency or user selection.
     """
-    df['Month'] = df['Date'].dt.to_period('M')
-    monthly_data = df.groupby('Month').agg({
+    if frequency == 'auto':
+        frequency = detect_data_frequency(df)
+    
+    if frequency == 'monthly':
+        df['Period'] = df['Date'].dt.to_period('M')
+        period_label = 'Month'
+    elif frequency == 'weekly':
+        # Create weekly periods starting on Mondays
+        df['Period'] = df['Date'].dt.to_period('W-MON')
+        period_label = 'Week'
+    else:  # 'daily' - no aggregation needed
+        return df.sort_values('Date')
+    
+    # Aggregate data at the chosen frequency level
+    aggregated_data = df.groupby('Period').agg({
         'Users': 'sum'
     }).reset_index()
     
-    monthly_data['Date'] = monthly_data['Month'].apply(lambda r: r.to_timestamp(how='S'))
-    monthly_data.drop(columns='Month', inplace=True)
+    # Convert Period to datetime (first day of period)
+    aggregated_data['Date'] = aggregated_data['Period'].apply(lambda r: r.to_timestamp(how='S'))
+    aggregated_data.drop(columns='Period', inplace=True)
     
-    return monthly_data.sort_values('Date')
+    return aggregated_data.sort_values('Date')
 
-
-def forecast_with_prophet(df, metric, forecast_months, data_source="GSC"):
-    """Performs forecasting using Facebook Prophet, with log transform for specific metrics only."""
+def forecast_with_prophet(df, metric, forecast_periods, frequency='auto', data_source="GSC"):
+    """Performs forecasting using Facebook Prophet with appropriate frequency."""
     try:
+        if frequency == 'auto':
+            frequency = detect_data_frequency(df)
+            
+        freq_map = {
+            'daily': 'D',
+            'weekly': 'W',
+            'monthly': 'MS'  # Month Start
+        }
+        prophet_freq = freq_map.get(frequency, 'D')
+        
         prophet_df = df[['Date', metric]].rename(columns={'Date': 'ds', metric: 'y'})
         
         # Apply log transform ONLY for Impressions and Users, NOT for Clicks
@@ -237,18 +337,18 @@ def forecast_with_prophet(df, metric, forecast_months, data_source="GSC"):
         if metric == "Position":
             model = Prophet(
                 yearly_seasonality=True,
-                weekly_seasonality=False, 
+                weekly_seasonality=(frequency == 'daily'),
                 daily_seasonality=False,
                 seasonality_mode='additive',
-                changepoint_prior_scale=0.03,  # More flexible for position
-                seasonality_prior_scale=5      # Less emphasis on seasonality for position
+                changepoint_prior_scale=0.03,
+                seasonality_prior_scale=5
             )
         # Special case for Clicks - no log transform
         elif metric == "Clicks":
-            model = create_prophet_model(data_source)
+            model = create_prophet_model(data_source, frequency)
         # For Impressions and Users - use log transform
         else:
-            model = create_prophet_model(data_source)
+            model = create_prophet_model(data_source, frequency)
             if apply_log_transform:
                 prophet_df['y'] = np.log1p(prophet_df['y'])  # log(y+1)
         
@@ -256,7 +356,7 @@ def forecast_with_prophet(df, metric, forecast_months, data_source="GSC"):
         model.fit(prophet_df)
         
         # Predict future
-        future = model.make_future_dataframe(periods=forecast_months, freq='MS')
+        future = model.make_future_dataframe(periods=forecast_periods, freq=prophet_freq)
         forecast = model.predict(future)
         
         # If we applied log transform, convert back to original scale
@@ -281,9 +381,9 @@ def forecast_with_prophet(df, metric, forecast_months, data_source="GSC"):
 def calculate_gsc_forecast(df, forecast_months=24):
     """Calculates forecasts for Search Console metrics"""
     try:
-        clicks_forecast = forecast_with_prophet(df, 'Clicks', forecast_months, data_source="GSC")
-        impressions_forecast = forecast_with_prophet(df, 'Impressions', forecast_months, data_source="GSC")
-        position_forecast = forecast_with_prophet(df, 'Position', forecast_months, data_source="GSC")
+        clicks_forecast = forecast_with_prophet(df, 'Clicks', forecast_months, 'monthly', data_source="GSC")
+        impressions_forecast = forecast_with_prophet(df, 'Impressions', forecast_months, 'monthly', data_source="GSC")
+        position_forecast = forecast_with_prophet(df, 'Position', forecast_months, 'monthly', data_source="GSC")
         
         if clicks_forecast is None or impressions_forecast is None or position_forecast is None:
             raise ValueError("Error in forecast calculation")
@@ -306,10 +406,23 @@ def calculate_gsc_forecast(df, forecast_months=24):
         st.error(f"Error in GSC forecast calculation: {str(e)}")
         return None, None
 
-def calculate_ga4_forecast(df, forecast_months=24):
-    """Calculates forecasts for Analytics users"""
+def calculate_ga4_forecast(df, forecast_periods=24, frequency='auto'):
+    """
+    Calculates forecasts for Analytics users with support for different frequencies
+    """
     try:
-        users_forecast = forecast_with_prophet(df, 'Users', forecast_months, data_source="GA4")
+        if frequency == 'auto':
+            frequency = detect_data_frequency(df)
+            
+        # Adjust forecast periods based on frequency
+        if frequency == 'monthly':
+            periods = forecast_periods  # as is
+        elif frequency == 'weekly':
+            periods = forecast_periods * 4  # approximately 4 weeks per month
+        else:  # daily
+            periods = forecast_periods * 30  # approximately 30 days per month
+        
+        users_forecast = forecast_with_prophet(df, 'Users', periods, frequency, data_source="GA4")
         
         if users_forecast is None:
             raise ValueError("Error in forecast calculation")
@@ -318,11 +431,11 @@ def calculate_ga4_forecast(df, forecast_months=24):
         historical_df = df.copy()
         forecast_df = users_forecast[~users_forecast['Date'].isin(historical_dates)].copy()
         
-        return historical_df, forecast_df
+        return historical_df, forecast_df, frequency
         
     except Exception as e:
         st.error(f"Error in GA4 forecast calculation: {str(e)}")
-        return None, None
+        return None, None, None
 
 def display_gsc_summary_metrics(historical_df, forecast_df):
     """Shows summary of Search Console metrics"""
@@ -401,14 +514,21 @@ def display_gsc_summary_metrics(historical_df, forecast_df):
         if i < len(metrics) - 1:
             st.markdown("---")
 
-def display_ga4_summary_metrics(historical_df, forecast_df):
-    """Shows summary of Google Analytics metrics"""
+def display_ga4_summary_metrics(historical_df, forecast_df, frequency='monthly'):
+    """Shows summary of Google Analytics metrics with appropriate time period label"""
     metric = {
         'name': 'Users',
         'metric': 'Users',
         'format': '{:,.0f}',
         'description': 'Number of active users on the site'
     }
+    
+    # Scegli l'etichetta appropriata basata sulla frequenza
+    period_label = {
+        'monthly': 'Monthly',
+        'weekly': 'Weekly',
+        'daily': 'Daily'
+    }.get(frequency, 'Monthly')
     
     cols = st.columns([20, 1])
     with cols[0]:
@@ -424,25 +544,25 @@ def display_ga4_summary_metrics(historical_df, forecast_df):
     
     with col1:
         st.metric(
-            f"Current Monthly Average {metric['name']}",
+            f"Current {period_label} Average {metric['name']}",
             metric['format'].format(current_avg)
         )
     with col2:
         st.metric(
-            f"Forecasted Monthly Average {metric['name']}",
+            f"Forecasted {period_label} Average {metric['name']}",
             metric['format'].format(forecast_avg),
             f"{change_pct:+.1f}%"
         )
     with col3:
         difference = forecast_avg - current_avg
-        display_difference = f"{'+' if difference > 0 else '-'}{metric['format'].format(abs(difference))}/month"
+        display_difference = f"{'+' if difference > 0 else '-'}{metric['format'].format(abs(difference))}/{frequency[:-2]}"
         
         st.metric(
             f"{metric['name']} Change",
             display_difference,
             delta_color="normal" if difference > 0 else "inverse"
         )
-
+        
 def create_gsc_plots(historical_df, forecast_df, plot_type='line'):
     """Creates plots for Search Console metrics"""
     metrics = [
@@ -522,21 +642,27 @@ def create_gsc_plots(historical_df, forecast_df, plot_type='line'):
     
     return figs
 
-def create_ga4_plots(historical_df, forecast_df, plot_type='line'):
-    """Creates plots for Google Analytics metrics"""
+def create_ga4_plots(historical_df, forecast_df, plot_type='line', frequency='monthly'):
+    """Creates plots for Google Analytics metrics with appropriate frequency labels"""
+    period_label = {
+        'monthly': 'Monthly',
+        'weekly': 'Weekly',
+        'daily': 'Daily'
+    }.get(frequency, 'Monthly')
+    
     fig = go.Figure()
     
     if plot_type == 'line':
         fig.add_trace(go.Scatter(
             x=historical_df['Date'],
             y=historical_df['Users'],
-            name="Historical Users",
+            name=f"Historical {period_label} Users",
             line=dict(color="#2962FF", width=3)
         ))
         fig.add_trace(go.Scatter(
             x=forecast_df['Date'],
             y=forecast_df['Forecast_Users'],
-            name="Forecasted Users",
+            name=f"Forecasted {period_label} Users",
             line=dict(color="#FF6D00", width=3)
         ))
         fig.add_trace(go.Scatter(
@@ -558,13 +684,13 @@ def create_ga4_plots(historical_df, forecast_df, plot_type='line'):
         fig.add_trace(go.Bar(
             x=historical_df['Date'],
             y=historical_df['Users'],
-            name="Historical Users",
+            name=f"Historical {period_label} Users",
             marker_color="#2962FF"
         ))
         fig.add_trace(go.Bar(
             x=forecast_df['Date'],
             y=forecast_df['Forecast_Users'],
-            name="Forecasted Users",
+            name=f"Forecasted {period_label} Users",
             marker_color="#FF6D00"
         ))
     
@@ -580,7 +706,7 @@ def create_ga4_plots(historical_df, forecast_df, plot_type='line'):
         )
     
     fig.update_layout(
-        title="Users Trend",
+        title=f"{period_label} Users Trend",
         xaxis_title="Date",
         yaxis_title="Users",
         height=400,
@@ -644,6 +770,18 @@ def main():
             ["line", "bar"],
             format_func=lambda x: "Lines" if x == "line" else "Bars"
         )
+        
+        # Nuova opzione per Analytics 4: scegliere la frequenza 
+        # o lasciarla rilevare automaticamente
+        if data_source == "Google Analytics 4":
+            data_frequency = st.selectbox(
+                "Data frequency",
+                ["auto", "daily", "weekly", "monthly"],
+                format_func=lambda x: "Auto-detect" if x == "auto" else x.capitalize(),
+                index=0
+            )
+        else:
+            data_frequency = "monthly"  # Default for GSC
     
     # Data source specific instructions
     if data_source == "Google Search Console":
@@ -664,15 +802,16 @@ def main():
         st.info("""
         **How to export data from Google Analytics 4:**
         1. Access Google Analytics 4
-        2. Go to "Reports" > "Acquisition" > "Acquisition Overview"
-        3. Set the time filter to the **last 12 months** 
-        4. Click the "Share this report" button at the top right
-        5. Select "Download file"
+        2. Go to "Reports" > "Acquisition" > "Acquisition Overview" 
+        3. Set the time filter to the **last 12 months** or longer
+        4. Either:
+           - Use the "Export" button (CSV format) 
+           - OR create a custom exploration and export with columns: "Date" and "Users"/"Utenti totali"
         
         ⚠️ **Important**: 
-        - If possible, export monthly data in CSV (or weekly if you want a weekly forecast)
-        - At least 8 weeks of data are recommended for accurate forecasts
-        - Don't modify the exported file format
+        - The tool supports standard GA4 exports as well as simple CSV with "Data" and "Utenti totali" columns
+        - Data frequency (daily/weekly/monthly) will be auto-detected or can be selected manually
+        - At least 30 days of data are recommended for accurate forecasts
         """)
     
     # File upload
@@ -724,24 +863,35 @@ def main():
         else:  # Google Analytics 4
             df = load_ga4_data(uploaded_file)
             if df is not None:
-                df = prepare_analytics_data(df)
+                # Verifica e mostra la frequenza rilevata
+                detected_frequency = detect_data_frequency(df)
+                if data_frequency == 'auto':
+                    st.info(f"Detected data frequency: {detected_frequency}")
+                    selected_frequency = detected_frequency
+                else:
+                    selected_frequency = data_frequency
+                    
+                # Prepara i dati in base alla frequenza selezionata
+                df = prepare_analytics_data(df, frequency=selected_frequency)
                 
                 if st.button("Generate forecast"):
                     with st.spinner("Calculating forecasts..."):
-                        historical_df, forecast_df = calculate_ga4_forecast(
+                        historical_df, forecast_df, used_frequency = calculate_ga4_forecast(
                             df,
-                            forecast_months=forecast_months
+                            forecast_periods=forecast_months,
+                            frequency=selected_frequency
                         )
                     
                     if historical_df is not None and forecast_df is not None:
                         st.header("Forecast Results")
                         
-                        display_ga4_summary_metrics(historical_df, forecast_df)
+                        display_ga4_summary_metrics(historical_df, forecast_df, frequency=used_frequency)
                         
                         figs = create_ga4_plots(
                             historical_df,
                             forecast_df,
-                            plot_type=plot_type
+                            plot_type=plot_type,
+                            frequency=used_frequency
                         )
                         
                         st.plotly_chart(figs[0], use_container_width=True)
